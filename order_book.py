@@ -1,7 +1,6 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, null
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
-import random
 
 from models import Base, Order
 
@@ -13,38 +12,57 @@ session = DBSession()
 
 def process_order(order):
     # Your code here
-    #     insert_order(order)
-    new_order = Order(sender_pk=order['sender_pk'], receiver_pk=order['receiver_pk'],
-                      buy_currency=order['buy_currency'], sell_currency=order['sell_currency'],
-                      buy_amount=order['buy_amount'], sell_amount=order['sell_amount'])
-    fields = ['sender_pk', 'receiver_pk', 'buy_currency', 'sell_currency', 'buy_amount', 'sell_amount']
-    new_order = Order(**{f: order[f] for f in fields})
+    # create a new order object and fill the fields
+    cur_order = Order(buy_currency=order['buy_currency'],
+                      sell_currency=order['sell_currency'],
+                      buy_amount=order['buy_amount'],
+                      sell_amount=order['sell_amount'],
+                      sender_pk=order['sender_pk'],
+                      receiver_pk=order['receiver_pk'])
 
-    session.add(new_order)
-    session.commit()
+    # insert the order into the database
+    session.add(cur_order)
 
-    existing_orders = session.query(Order).all()
+    # check if there are any existing orders that match
+    existing_orders = session.query(Order).filter(Order.filled == cur_order.filled,
+                                                  Order.buy_currency == cur_order.sell_currency,
+                                                  Order.sell_currency == cur_order.buy_currency,
+                                                  (Order.sell_amount / Order.buy_amount) >= (cur_order.buy_amount / cur_order.sell_amount)).first()
 
-    for order in existing_orders:
-        if (order.filled == None):
-            if (order.buy_currency == new_order.sell_currency) & (order.sell_currency == new_order.buy_currency):
-                if (order.buy_amount > 0) & (new_order.sell_amount > 0):
-                    if (order.sell_amount / order.buy_amount >= new_order.buy_amount / new_order.sell_amount):
-                        if order.counterparty_id == None:
-                            order.filled = datetime.now()
-                            new_order.filled = datetime.now()
-                            order.counterparty_id = new_order.id
-                            new_order.counterparty_id = order.id
-                            if order.sell_amount < order.buy_amount:
-                                new = Order()
-                                new.sender_pk = new_order.sender_pk
-                                new.receiver_pk = new_order.receiver_pk
-                                new.buy_currency = new_order.buy_currency
-                                new.sell_currency = new_order.sell_currency
-                                new.buy_amount = random.randint(1, 10)
-                                new.sell_amount = new_order.sell_amount * (new.buy_amount / new_order.buy_amount)
-                                new.created_by = new_order.id
-                                new.creator_id = new_order.id
-                                session.add(new)
-                            session.commit()
-                            break
+    # if existing_orders is null:
+    #     return
+
+    if existing_orders:
+        # set the filled field to be the current timestamp on both orders
+        existing_orders.filled = datetime.now()
+        cur_order.filled = datetime.now()
+
+        # set counterparty_id to be the id of the other order
+        existing_orders.counterparty_id = cur_order.id
+        cur_order.counterparty_id = existing_orders.id
+
+        # if one of the orders is not completely filled
+        if existing_orders.sell_amount != cur_order.buy_amount:
+            remain = cur_order.buy_amount - existing_orders.sell_amount
+
+            if remain > 0:
+                convert = remain / (cur_order.buy_amount / cur_order.sell_amount)
+                remaining_balance_order = Order(buy_currency=cur_order.buy_currency,
+                                                sell_currency=cur_order.sell_currency,
+                                                sender_pk=cur_order.sender_pk,
+                                                receiver_pk=cur_order.receiver_pk,
+                                                buy_amount=remain,
+                                                sell_amount=convert,
+                                                creator_id=cur_order.id)
+            else:
+                convert = abs(remain) / (existing_orders.sell_amount / existing_orders.buy_amount)
+                remaining_balance_order = Order(buy_currency=existing_orders.buy_currency,
+                                                sell_currency=existing_orders.sell_currency,
+                                                sender_pk=existing_orders.sender_pk,
+                                                receiver_pk=existing_orders.receiver_pk,
+                                                buy_amount=convert,
+                                                sell_amount=abs(remain),
+                                                creator_id=existing_orders.id)
+            session.add(remaining_balance_order)
+        session.commit()
+        session.close()
